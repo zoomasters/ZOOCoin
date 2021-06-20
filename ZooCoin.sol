@@ -1,16 +1,16 @@
 pragma solidity ^0.8.0;
 // SPDX-License-Identifier: Unlicensed
 
-import "../utils/Ownable.sol";
-import "../utils/SafeMath.sol";
-import "../utils/Address.sol";
-import "../utils/IERC20.sol";
-import "../utils/IUniswapV2Pair.sol";
-import "../utils/IUniswapV2Router02.sol";
-import "../utils/IUniswapV2Factory.sol";
+import "utils/Ownable.sol";
+import "utils/SafeMath.sol";
+import "utils/Address.sol";
+import "utils/IERC20.sol";
+import "utils/IUniswapV2Pair.sol";
+import "utils/IUniswapV2Router02.sol";
+import "utils/IUniswapV2Factory.sol";
 
 
-contract Zoo is Context, IERC20, Ownable{
+contract ZOO is Context, IERC20, Ownable{
     
     using SafeMath for uint256;
     using Address for address;
@@ -23,26 +23,49 @@ contract Zoo is Context, IERC20, Ownable{
 
     mapping (address => bool) private _isExcluded;
     address[] private _excluded;
-   
+    address private constant _burnAddress = 0x000000000000000000000000000000000000dEaD;
     uint256 private constant MAX = ~uint256(0);
-    uint256 private _tTotal = 1000000000 * 10**6 * 10**9;
+    uint256 private _tTotal = 100 * 10**6 * 10**9;
     uint256 private _rTotal = (MAX - (MAX % _tTotal));
     uint256 private _tFeeTotal;
 
-    string private _name = "Zoo";
+    string private _name = "ZOO";
     string private _symbol = "ZOO";
     uint8 private _decimals = 9;
     
-    uint256 public _taxFee = 5;
+    uint256 public _taxFee = 3;
     uint256 private _previousTaxFee = _taxFee;
     
-    uint256 public _liquidityFee = 5;
+    uint256 public _liquidityFee = 3;
     uint256 private _previousLiquidityFee = _liquidityFee;
     
+    uint256 public _burnPercent = 3;
+    uint256 private _previousBurnPercent = _burnPercent;
+
     bool public swapAndLiquifyEnabled = true;
     
     uint256 public _maxTxAmount = 5000000 * 10**6 * 10**9;
     uint256 private numTokensSellToAddToLiquidity = 500000 * 10**6 * 10**9;
+    
+    struct tConvert{
+      uint256 tAmount;
+      uint256 tFee;
+      uint256 tLiquidity;
+      uint256 tBurn;
+      uint256 rate;
+  }
+
+struct finalValues{
+    uint256 rAmount;
+    uint256 rTransferAmount;
+    uint256 rFee;
+    uint256 rBurn;
+    uint256 tTransferAmount;
+    uint256 tFee;
+    uint256 tLiquidity;
+    uint256 tBurn;
+}
+        uint256 private _tBurnTotal;
     
        event SwapAndLiquify(
         uint256 tokensSwapped,
@@ -58,7 +81,7 @@ contract Zoo is Context, IERC20, Ownable{
         _rOwned[_msgSender()] = _rTotal;
        //Test
         
-        IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(0xD99D1c33F9fC3444f8101754aBC46c52416550D1); 
+        IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(0xa5E0829CaCEd8fFDD4De3c43696c57F7D7A678ff); 
        //Prod 
        //IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(0x05fF2B0DB69458A0750badebc4f9e13aDd608C7F); //Pancake Swap's address
          // Create a uniswap pair for this new token
@@ -176,22 +199,12 @@ function name() public view returns (string memory) {
         _tokenTransfer(from,to,amount,takeFee);
     }
 
-    
-     function _transferBothExcluded(address sender, address recipient, uint256 tAmount) private {
-        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, uint256 tFee, uint256 tLiquidity) = _getValues(tAmount);
-        _tOwned[sender] = _tOwned[sender].sub(tAmount);
-        _rOwned[sender] = _rOwned[sender].sub(rAmount);
-        _tOwned[recipient] = _tOwned[recipient].add(tTransferAmount);
-        _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);        
-        _takeLiquidity(tLiquidity);
-        _reflectFee(rFee, tFee);
-        emit Transfer(sender, recipient, tTransferAmount);
-    }
-    
-       function _getValues(uint256 tAmount) private view returns (uint256, uint256, uint256, uint256, uint256, uint256) {
-        (uint256 tTransferAmount, uint256 tFee, uint256 tLiquidity) = _getTValues(tAmount);
-        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee) = _getRValues(tAmount, tFee, tLiquidity, _getRate());
-        return (rAmount, rTransferAmount, rFee, tTransferAmount, tFee, tLiquidity);
+    function _getValues(uint256 tAmount) private view returns (finalValues memory) {
+        (uint256 tTransferAmount, uint256 tFee, uint256 tLiquidity,uint256 tBurn) = _getTValues(tAmount);
+        tConvert memory val=tConvert(tAmount, tFee, tLiquidity, tBurn, _getRate());
+        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 rBurn) = _getRValues(val);
+        finalValues memory returnval=finalValues(rAmount, rTransferAmount, rFee, rBurn, tTransferAmount, tFee, tLiquidity, tBurn);
+        return (returnval);
     }
 
     function _takeLiquidity(uint256 tLiquidity) private {
@@ -207,19 +220,21 @@ function name() public view returns (string memory) {
         _tFeeTotal = _tFeeTotal.add(tFee);
     }
     
-      function _getTValues(uint256 tAmount) private view returns (uint256, uint256, uint256) {
+      function _getTValues(uint256 tAmount) private view returns (uint256, uint256, uint256,uint256) {
         uint256 tFee = calculateTaxFee(tAmount);
         uint256 tLiquidity = calculateLiquidityFee(tAmount);
-        uint256 tTransferAmount = tAmount.sub(tFee).sub(tLiquidity);
-        return (tTransferAmount, tFee, tLiquidity);
+        uint256 tBurn=calculateBurn(tAmount);
+        uint256 tTransferAmount = tAmount.sub(tFee).sub(tLiquidity).sub(tBurn);
+        return (tTransferAmount, tFee, tLiquidity,tBurn);
     }
 
-    function _getRValues(uint256 tAmount, uint256 tFee, uint256 tLiquidity, uint256 currentRate) private pure returns (uint256, uint256, uint256) {
-        uint256 rAmount = tAmount.mul(currentRate);
-        uint256 rFee = tFee.mul(currentRate);
-        uint256 rLiquidity = tLiquidity.mul(currentRate);
-        uint256 rTransferAmount = rAmount.sub(rFee).sub(rLiquidity);
-        return (rAmount, rTransferAmount, rFee);
+    function _getRValues(tConvert memory val) private pure returns (uint256, uint256, uint256, uint256) {
+        uint256 rAmount = val.tAmount.mul(val.rate);
+        uint256 rFee = val.tFee.mul(val.rate);
+        uint256 rLiquidity = val.tLiquidity.mul(val.rate);
+        uint256 rBurn = val.tBurn.mul(val.rate);
+        uint256 rTransferAmount = rAmount.sub(rFee).sub(rLiquidity).sub(rBurn);
+        return (rAmount, rTransferAmount, rFee, rBurn);
     }
 
 function calculateTaxFee(uint256 _amount) private view returns (uint256) {
@@ -230,6 +245,12 @@ function calculateTaxFee(uint256 _amount) private view returns (uint256) {
 
     function calculateLiquidityFee(uint256 _amount) private view returns (uint256) {
         return _amount.mul(_liquidityFee).div(
+            10**2
+        );
+    }
+
+    function calculateBurn(uint256 _amount) private view returns (uint256) {
+        return _amount.mul(_burnPercent).div(
             10**2
         );
     }
@@ -281,6 +302,7 @@ function calculateTaxFee(uint256 _amount) private view returns (uint256) {
             block.timestamp
         );
     }
+    
         function addLiquidity(uint256 tokenAmount, uint256 ethAmount) private {
         // approve token transfer to cover all possible scenarios
         _approve(address(this), address(uniswapV2Router), tokenAmount);
@@ -327,32 +349,56 @@ function calculateTaxFee(uint256 _amount) private view returns (uint256) {
     }
 
     function _transferStandard(address sender, address recipient, uint256 tAmount) private {
-        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, uint256 tFee, uint256 tLiquidity) = _getValues(tAmount);
-        _rOwned[sender] = _rOwned[sender].sub(rAmount);
-        _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);
-        _takeLiquidity(tLiquidity);
-        _reflectFee(rFee, tFee);
-        emit Transfer(sender, recipient, tTransferAmount);
+        (finalValues memory val)=_getValues(tAmount);
+        _rOwned[sender] = _rOwned[sender].sub(val.rAmount);
+        _rOwned[recipient] = _rOwned[recipient].add(val.rTransferAmount);
+        _takeLiquidity(val.tLiquidity);
+        _reflectFee(val.rFee, val.tFee);
+        _burn(sender,val.tBurn);
+        emit Transfer(sender, recipient, val.tTransferAmount);
     }
 
+ 
+    
+
     function _transferToExcluded(address sender, address recipient, uint256 tAmount) private {
-        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, uint256 tFee, uint256 tLiquidity) = _getValues(tAmount);
-        _rOwned[sender] = _rOwned[sender].sub(rAmount);
-        _tOwned[recipient] = _tOwned[recipient].add(tTransferAmount);
-        _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);           
-        _takeLiquidity(tLiquidity);
-        _reflectFee(rFee, tFee);
-        emit Transfer(sender, recipient, tTransferAmount);
+        (finalValues memory val)=_getValues(tAmount);
+        _rOwned[sender] = _rOwned[sender].sub(val.rAmount);
+        _tOwned[recipient] = _tOwned[recipient].add(val.tTransferAmount);
+        _rOwned[recipient] = _rOwned[recipient].add(val.rTransferAmount);           
+        _takeLiquidity(val.tLiquidity);
+        _reflectFee(val.rFee, val.tFee);
+        _burn(sender,val.tBurn);
+        emit Transfer(sender, recipient, val.tTransferAmount);
     }
 
     function _transferFromExcluded(address sender, address recipient, uint256 tAmount) private {
-        (uint256 rAmount, uint256 rTransferAmount, uint256 rFee, uint256 tTransferAmount, uint256 tFee, uint256 tLiquidity) = _getValues(tAmount);
+        (finalValues memory val)=_getValues(tAmount);
         _tOwned[sender] = _tOwned[sender].sub(tAmount);
-        _rOwned[sender] = _rOwned[sender].sub(rAmount);
-        _rOwned[recipient] = _rOwned[recipient].add(rTransferAmount);   
-        _takeLiquidity(tLiquidity);
-        _reflectFee(rFee, tFee);
-        emit Transfer(sender, recipient, tTransferAmount);
+        _rOwned[sender] = _rOwned[sender].sub(val.rAmount);
+        _rOwned[recipient] = _rOwned[recipient].add(val.rTransferAmount);   
+        _takeLiquidity(val.tLiquidity);
+        _reflectFee(val.rFee, val.tFee);
+        _burn(sender,val.tBurn);
+        emit Transfer(sender, recipient, val.tTransferAmount);
+    }
+
+    function _transferBothExcluded(address sender, address recipient, uint256 tAmount) private {
+        (finalValues memory val)=_getValues(tAmount);
+        _tOwned[sender] = _tOwned[sender].sub(tAmount);
+        _rOwned[sender] = _rOwned[sender].sub(val.rAmount);
+        _tOwned[recipient] = _tOwned[recipient].add(val.tTransferAmount);
+        _rOwned[recipient] = _rOwned[recipient].add(val.rTransferAmount);        
+        _takeLiquidity(val.tLiquidity);
+        _reflectFee(val.rFee, val.tFee);
+        _burn(sender,val.tBurn);
+        emit Transfer(sender, recipient, val.tTransferAmount);
+    }
+
+    function _burn(address sender,uint256 tBurn) private{
+     _rOwned[_burnAddress] = _rOwned[_burnAddress].add(tBurn);
+     _tBurnTotal = _tBurnTotal.add(tBurn);
+     emit Transfer(sender,_burnAddress,tBurn);
     }
     
         function removeAllFee() private {
@@ -380,6 +426,11 @@ function calculateTaxFee(uint256 _amount) private view returns (uint256) {
         _approve(sender, _msgSender(), _allowances[sender][_msgSender()].sub(amount, "ERC20: transfer amount exceeds allowance"));
         return true;
     }
+    
+        function totalBurn() public view returns (uint256) {
+        return _tBurnTotal;
+    }
+
 
     
 
